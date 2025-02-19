@@ -39,6 +39,8 @@ pub(super) struct Drc20Updater<'a, 'db, 'tx> {
     drc20_transferable_log: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
     inscription_id_to_inscription_entry: &'a Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
     transaction_id_to_transaction: &'a mut Table<'db, 'tx, &'static TxidValue, &'static [u8]>,
+    transaction_id_to_drc20_events: &'a mut MultimapTable<'db, 'tx, &'static TxidValue, &'static [u8]>,
+    address_to_drc20_events: &'a mut MultimapTable<'db, 'tx, &'static str, &'static [u8]>,
 }
 
 impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
@@ -50,6 +52,8 @@ impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
         drc20_transferable_log: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
         inscription_id_to_inscription_entry: &'a Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
         transaction_id_to_transaction: &'a mut Table<'db, 'tx, &'static TxidValue, &'static [u8]>,
+        transaction_id_to_drc20_events: &'a mut MultimapTable<'db, 'tx, &'static TxidValue, &'static [u8]>,
+        address_to_drc20_events: &'a mut MultimapTable<'db, 'tx, &'static str, &'static [u8]>,
     ) -> Result<Self> {
         Ok(Self {
             drc20_token_info,
@@ -59,6 +63,8 @@ impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
             drc20_transferable_log,
             inscription_id_to_inscription_entry,
             transaction_id_to_transaction,
+            transaction_id_to_drc20_events,
+            address_to_drc20_events,
         })
     }
 
@@ -137,7 +143,7 @@ impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
 
     pub fn execute_message(&mut self, context: BlockContext, msg: &Message) -> Result {
         let exec_msg = self.create_execution_message(msg, context.network)?;
-        let _ = match &exec_msg.op {
+        if let Ok(mut event) = match &exec_msg.op {
             Operation::Deploy(deploy) => {
                 Self::process_deploy(self, context.clone(), &exec_msg, deploy.clone())
             }
@@ -146,6 +152,45 @@ impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
                 Self::process_inscribe_transfer(self, context.clone(), &exec_msg.clone(), transfer.clone())
             }
             Operation::Transfer(_) => Self::process_transfer(self, context.clone(), &exec_msg.clone()),
+        } {
+            self.transaction_id_to_drc20_events.insert(
+                &msg.txid.store(),
+                rmp_serde::to_vec(&event).unwrap().as_slice(),
+            )?;
+            match &mut event {
+                Event::Deploy(ref mut de) => {
+                    de.txid = Some(msg.txid);
+                    self.address_to_drc20_events.insert(
+                        de.deployed_by.to_string().as_str(),
+                        rmp_serde::to_vec(&de).unwrap().as_slice(),
+                    )?;
+                }
+                Event::Mint(ref mut me) => {
+                    me.txid = Some(msg.txid);
+                    self.address_to_drc20_events.insert(
+                        me.to.to_string().as_str(),
+                        rmp_serde::to_vec(&me).unwrap().as_slice(),
+                    )?;
+                }
+                Event::InscribeTransfer(ref mut ite) => {
+                    ite.txid = Some(msg.txid);
+                    self.address_to_drc20_events.insert(
+                        ite.to.to_string().as_str(),
+                        rmp_serde::to_vec(&ite).unwrap().as_slice(),
+                    )?;
+                }
+                Event::Transfer(ref mut te) => {
+                    te.txid = Some(msg.txid);
+                    self.address_to_drc20_events.insert(
+                        te.to.to_string().as_str(),
+                        rmp_serde::to_vec(&te).unwrap().as_slice(),
+                    )?;
+                    self.address_to_drc20_events.insert(
+                        te.from.to_string().as_str(),
+                        rmp_serde::to_vec(&te).unwrap().as_slice(),
+                    )?;
+                }
+            }
         };
         Ok(())
     }

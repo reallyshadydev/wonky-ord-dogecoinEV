@@ -40,6 +40,10 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   reward: u64,
   sat_to_inscription_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
   satpoint_to_id: &'a mut Table<'db, 'tx, &'static SatPointValue, &'static InscriptionIdValue>,
+  transaction_id_to_inscription_events:
+    &'a mut MultimapTable<'db, 'tx, &'static TxidValue, &'static [u8]>,
+  address_to_inscription_events: &'a mut MultimapTable<'db, 'tx, &'static str, &'static [u8]>,
+  index: Arc<&'a Index>,
   timestamp: u32,
   value_cache: &'a mut HashMap<OutPoint, OutPointMapValue>,
   chain: Chain,
@@ -63,6 +67,9 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     address_to_outpoint: &'a mut MultimapTable<'db, 'tx, &'static [u8], &'static OutPointValue>,
     sat_to_inscription_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
     satpoint_to_id: &'a mut Table<'db, 'tx, &'static SatPointValue, &'static InscriptionIdValue>,
+    transaction_id_to_inscription_events: &'a mut MultimapTable<'db, 'tx, &'static TxidValue, &'static [u8]>,
+    address_to_inscription_events: &'a mut MultimapTable<'db, 'tx, &'static str, &'static [u8]>,
+    index: Arc<&'a Index>,
     timestamp: u32,
     value_cache: &'a mut HashMap<OutPoint, OutPointMapValue>,
     chain: Chain,
@@ -96,6 +103,9 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       reward: Height(height).subsidy(),
       sat_to_inscription_id,
       satpoint_to_id,
+      transaction_id_to_inscription_events,
+      address_to_inscription_events,
+      index,
       timestamp,
       value_cache,
       chain,
@@ -426,7 +436,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
               .get(&flotsam.inscription_id.store())?
               .map(|entry| InscriptionEntry::load(entry.value()).inscription_number),
           inscription_id: flotsam.inscription_id,
-          action: match flotsam.origin {
+          action: match flotsam.origin.clone() {
             Origin::Old(_) => Action::Transfer,
             Origin::New {
               fee: _,
@@ -439,9 +449,119 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           new_satpoint: Some(Entry::load(new_satpoint)),
         });
 
+    let sat: Option<SatPoint> = Some(Entry::load(new_satpoint));
+    match flotsam.origin {
+      Origin::Old(old_sat) => {
+        let to = if let Some(_sat) = sat {
+          Some(Self::get_script_key_on_satpoint(
+            self,
+            _sat,
+            self.chain.network(),
+          )?)
+        } else {
+          None
+        };
+        let from = Some(Self::get_script_key_on_satpoint(
+          self,
+          old_sat,
+          self.chain.network(),
+        )?);
+        let mut event: InscriptionEvent = InscriptionEvent {
+          event: "Transfer".to_string(),
+          txid: Some(flotsam.txid),
+          inscription_id: Some(flotsam.inscription_id),
+          vout: if let Some(_sat) = sat {
+            _sat.outpoint.vout
+          } else {
+            0
+          },
+          from: from.clone(),
+          to: to.clone(),
+        };
+        if let Some(sender) = from {
+          self.address_to_inscription_events.insert(
+            sender.to_string().as_str(),
+            rmp_serde::to_vec(&event).unwrap().as_slice(),
+          )?;
+        };
+        if let Some(receiver) = to {
+          self.address_to_inscription_events.insert(
+            receiver.to_string().as_str(),
+            rmp_serde::to_vec(&event).unwrap().as_slice(),
+          )?;
+        };
+        event.txid = None;
+        self.transaction_id_to_inscription_events.insert(
+          &flotsam.txid.store(),
+          rmp_serde::to_vec(&event).unwrap().as_slice(),
+        )?;
+      }
+      Origin::New { .. } => {
+
+        let to = if let Some(_sat) = sat {
+          Some(Self::get_script_key_on_satpoint(
+            self,
+            _sat,
+            self.chain.network(),
+          )?)
+        } else {
+          None
+        };
+        let event: InscriptionEvent = InscriptionEvent {
+          event: "Inscribe".to_string(),
+          txid: Some(flotsam.txid),
+          inscription_id: Some(flotsam.inscription_id),
+          vout: if let Some(_sat) = sat {
+            _sat.outpoint.vout
+          } else {
+            0
+          },
+          from: None,
+          to: to.clone(),
+        };
+        if let Some(receiver) = to {
+          self.address_to_inscription_events.insert(
+            receiver.to_string().as_str(),
+            rmp_serde::to_vec(&event).unwrap().as_slice(),
+          )?;
+        };
+        self.transaction_id_to_inscription_events.insert(
+          &flotsam.txid.store(),
+          rmp_serde::to_vec(&event).unwrap().as_slice(),
+        )?;
+      }
+    }
+
     self.satpoint_to_id.insert(&new_satpoint, &inscription_id)?;
     self.id_to_satpoint.insert(&inscription_id, &new_satpoint)?;
 
     Ok(())
+  }
+
+  fn get_script_key_on_satpoint(
+    &mut self,
+    satpoint: SatPoint,
+    network: Network,
+  ) -> Result<ScriptKey> {
+    if let Some(transaction) = self
+        .transaction_id_to_transaction
+        .get(&satpoint.outpoint.txid.store())?
+    {
+      let tx: Transaction = consensus::encode::deserialize(transaction.value())?;
+      let pub_key = tx.output[satpoint.outpoint.vout as usize]
+          .script_pubkey
+          .clone();
+      Ok(ScriptKey::from_script(&pub_key, network))
+    } else if let Some(tx) = self.index.get_transaction(satpoint.outpoint.txid)? {
+      let pub_key = tx.output[satpoint.outpoint.vout as usize]
+          .script_pubkey
+          .clone();
+      Ok(ScriptKey::from_script(&pub_key, network))
+    } else {
+      Err(anyhow!(
+        "failed to get tx out! error: outpoint {} not found",
+        satpoint.outpoint
+      ))
+    }
   }
 }

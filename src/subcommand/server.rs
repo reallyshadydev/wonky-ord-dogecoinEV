@@ -47,9 +47,11 @@ use {
     set_header::SetResponseHeaderLayer,
   },
 };
+use crate::drc20::{Event, Num};
 use crate::drc20::operation::{deserialize_drc20_operation, Action};
 use crate::drc20::token_info::{ExtendedTokenInfo, HolderBalanceForTick, HoldersInfoForTick};
-use crate::templates::{DRC20Balance, DRC20Output, DRC20UtxoOutput};
+use crate::inscription::{InscriptionEvent, InscriptionEventWithBlock};
+use crate::templates::{DRC20Balance, DRC20Output, DRC20UtxoOutput, TransactionJson, TransactionWithAddress, TxOutWithAddress};
 
 mod error;
 mod query;
@@ -140,6 +142,12 @@ struct Drc20BalanceQuery {
 #[derive(Deserialize)]
 struct OutputsQuery {
   outputs: String,
+}
+
+#[derive(Deserialize)]
+struct PaginationQuery {
+  page: Option<usize>,
+  size: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -323,6 +331,11 @@ impl Server {
           get(Self::dunes_by_address_unpaginated),
         )
         .route("/dunes/balance/:address/:page", get(Self::dunes_by_address))
+        .route(
+          "/inscription/events/:address",
+          get(Self::inscription_events_by_address),
+        )
+        .route("/drc20/events/:address", get(Self::drc20_events_by_address))
         .route(
           "/utxos/balance/:address",
           get(Self::utxos_by_address_unpaginated),
@@ -918,6 +931,211 @@ impl Server {
         }
       }
       Ok(Json(json!({"drc20": drc20balances})).into_response())
+    })
+  }
+
+  async fn drc20_events_by_address(
+    Extension(index): Extension<Arc<Index>>,
+    Path(address): Path<String>,
+    Query(query): Query<PaginationQuery>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let address = ScriptKey::from_address(
+        Address::from_str(&address).map_err(|err| ServerError::BadRequest(err.to_string()))?,
+        index.get_network()?,
+      );
+
+      let mut page = query.page.unwrap_or(0);
+      if page > 0 {
+        page -= 1;
+      }
+      let size = query.size.unwrap_or(10);
+      let mut drc20_events = index.get_drc20_events_by_address(address, page, size)?;
+      let mut drc20_events_parsed: Vec<Drc20Event> = Vec::new();
+
+      for event in drc20_events {
+        let mut parsed_event = match event {
+          Event::Deploy(deploy) => Drc20Event {
+            event: "Deploy".to_string(),
+            txid: deploy.txid,
+            vout: deploy.vout,
+            from: Some(deploy.deployed_by),
+            to: None,
+            amt: None,
+            tick: deploy.tick,
+            supply: Some(deploy.supply.to_string()),
+            limit: Some(deploy.limit_per_mint.to_string()),
+            block: None,
+            timestamp: None,
+          },
+          Event::Mint(mint) => Drc20Event {
+            event: "Mint".to_string(),
+            txid: mint.txid,
+            vout: mint.vout,
+            from: None,
+            to: Some(mint.to),
+            amt: Some(mint.amount.to_string()),
+            tick: mint.tick,
+            supply: None,
+            limit: None,
+            block: None,
+            timestamp: None,
+          },
+          Event::InscribeTransfer(inscribe_transfer) => Drc20Event {
+            event: "Inscribe Transfer".to_string(),
+            txid: inscribe_transfer.txid,
+            vout: inscribe_transfer.vout,
+            from: None,
+            to: Some(inscribe_transfer.to),
+            amt: Some(inscribe_transfer.amount.to_string()),
+            tick: inscribe_transfer.tick,
+            supply: None,
+            limit: None,
+            block: None,
+            timestamp: None,
+          },
+          Event::Transfer(transfer) => Drc20Event {
+            event: "Transfer".to_string(),
+            txid: transfer.txid,
+            vout: transfer.vout,
+            from: Some(transfer.from),
+            to: Some(transfer.to),
+            amt: Some(transfer.amount.to_string()),
+            tick: transfer.tick,
+            supply: None,
+            limit: None,
+            block: None,
+            timestamp: None,
+          },
+        };
+
+        let decimal = if let Some(token_info) = index.get_drc20_token_info(&parsed_event.tick)? {
+          token_info.decimal
+        } else {
+          18u8
+        };
+
+        if let Some(ref mut from) = parsed_event.from {
+          if index.get_network()? == Network::Regtest {
+            match from {
+              ScriptKey::Address(ref mut address) => address.network = Network::Regtest,
+              _ => {}
+            }
+          }
+        }
+
+        if let Some(ref mut to) = parsed_event.to {
+          if index.get_network()? == Network::Regtest {
+            match to {
+              ScriptKey::Address(ref mut address) => address.network = Network::Regtest,
+              _ => {}
+            }
+          }
+        }
+
+        if let Some(ref supply) = parsed_event.supply {
+          if let Ok(val) = Num::from_str(supply.as_str()) {
+            if let Ok(val_u128) = val.checked_to_u128() {
+              parsed_event.supply = Some(format_balance(val_u128, decimal));
+            }
+          }
+        }
+
+        if let Some(ref limit) = parsed_event.limit {
+          if let Ok(val) = Num::from_str(limit.as_str()) {
+            if let Ok(val_u128) = val.checked_to_u128() {
+              parsed_event.limit = Some(format_balance(val_u128, decimal));
+            }
+          }
+        }
+
+        if parsed_event.event != "Deploy" {
+          if let Some(ref amount) = parsed_event.amt {
+            if let Ok(val) = u128::from_str(amount.as_str()) {
+              parsed_event.amt = Some(format_balance(val, decimal));
+            }
+          }
+        }
+
+        if let Some(block_hash_info) =
+            index.get_transaction_blockhash(parsed_event.txid.unwrap())?
+        {
+          if let Some(confirmations) = block_hash_info.confirmations {
+            if let Some(height) = index.height()? {
+              parsed_event.block = Some(height.0 + 1 - confirmations);
+            }
+            parsed_event.timestamp = block_hash_info.time;
+          }
+        };
+
+        drc20_events_parsed.push(parsed_event);
+      }
+
+      drc20_events_parsed.sort_by_key(|key| cmp::Reverse(key.block.unwrap_or(0)));
+      let paginated_events: Vec<_> = drc20_events_parsed
+          .iter()
+          .skip(page * size)
+          .take(size)
+          .collect();
+
+      Ok(Json(paginated_events).into_response())
+    })
+  }
+
+  async fn inscription_events_by_address(
+    Extension(index): Extension<Arc<Index>>,
+    Path(address): Path<String>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let address = ScriptKey::from_address(
+        Address::from_str(&address).map_err(|err| ServerError::BadRequest(err.to_string()))?,
+        index.get_network()?,
+      );
+
+      let mut inscription_events: Vec<InscriptionEventWithBlock> =
+          if let Ok(events) = index.get_inscription_events_by_address(address) {
+            events
+                .iter()
+                .map(|event| {
+                  let mut block: Option<u32> = None;
+                  if let Some(txid) = event.txid {
+                    if let Ok(Some(block_hash_info)) = index.get_transaction_blockhash(txid) {
+                      if let Some(confirmations) = block_hash_info.confirmations {
+                        if let Ok(Some(height)) = index.height() {
+                          block = Some(height.0 + 1 - confirmations);
+                        }
+                      }
+                    };
+                  } else {
+                    if let Some(id) = event.inscription_id {
+                      if let Ok(Some(block_hash_info)) = index.get_transaction_blockhash(id.txid) {
+                        if let Some(confirmations) = block_hash_info.confirmations {
+                          if let Ok(Some(height)) = index.height() {
+                            block = Some(height.0 + 1 - confirmations);
+                          }
+                        }
+                      };
+                    }
+                  }
+
+                  InscriptionEventWithBlock {
+                    event: event.clone().event,
+                    txid: event.txid,
+                    inscription_id: event.inscription_id,
+                    vout: event.vout,
+                    to: event.clone().to,
+                    from: event.clone().from,
+                    block,
+                  }
+                })
+                .collect()
+          } else {
+            Vec::new()
+          };
+
+      inscription_events.sort_by_key(|key| cmp::Reverse(key.block.unwrap_or(0)));
+
+      Ok(Json(inscription_events).into_response())
     })
   }
 
@@ -2032,6 +2250,16 @@ impl Server {
   ) -> ServerResult<Response> {
     let json = query.json.unwrap_or(false);
 
+    let drc20_events: Vec<Drc20Event> = process_drc20_events(
+      &index,
+      index.get_drc20_events_by_tx_id(txid)?
+          .into_iter()
+          .map(drc20_event_from)
+          .collect(),
+    )?;
+
+    let inscription_events: Vec<InscriptionEvent> = index.get_inscription_events_by_tx_id(txid)?;
+
     let mut blockhash = None;
     let mut confirmations = None;
 
@@ -2040,21 +2268,60 @@ impl Server {
       confirmations = block_hash_info.confirmations;
     }
 
-    let tx_object = TransactionHtml::new(
-      index
+    let transaction = index
         .get_transaction(txid)?
-        .ok_or_not_found(|| format!("transaction {txid}"))?,
-      blockhash,
-      confirmations,
-      index.inscription_count(txid)?,
-      page_config.chain,
-      None,
-    );
+        .ok_or_not_found(|| format!("transaction {txid}"))?;
 
     Ok(if !json {
+      let tx_object = TransactionHtml::new(
+        transaction,
+        blockhash,
+        confirmations,
+        index.inscription_count(txid)?,
+        page_config.chain,
+        None,
+        drc20_events,
+        inscription_events,
+      );
       tx_object.page(page_config).into_response()
     } else {
-      Json(tx_object.to_json()).into_response()
+      let mut tx_out_with_address = Vec::new();
+
+      for out in transaction.output {
+        let address = if let Ok(address) = page_config.chain.address_from_script(&out.script_pubkey)
+        {
+          Some(address)
+        } else {
+          None
+        };
+
+        tx_out_with_address.push(TxOutWithAddress {
+          value: out.value,
+          script_pubkey: out.script_pubkey,
+          address,
+        });
+      }
+
+      let tx_with_address = TransactionWithAddress {
+        version: transaction.version,
+        lock_time: transaction.lock_time,
+        input: transaction.input,
+        output: tx_out_with_address,
+      };
+
+      let tx_object = TransactionJson {
+        blockhash,
+        confirmations,
+        chain: page_config.chain,
+        etching: None,
+        inscription_count: index.inscription_count(txid)?,
+        transaction: tx_with_address,
+        txid,
+        drc20_events,
+        inscription_events,
+      };
+
+      Json(tx_object).into_response()
     })
   }
 
@@ -2806,6 +3073,128 @@ async fn process_inscriptions(
   }
 
   Ok(inscriptions_json)
+}
+
+fn get_and_process_drc20_events(index: &Index, txid: Txid) -> Result<Vec<Drc20Event>> {
+  let events = index
+      .get_drc20_events_by_tx_id(txid)?
+      .into_iter()
+      .map(drc20_event_from)
+      .collect();
+
+  process_drc20_events(index, events)
+}
+
+pub(crate) fn process_drc20_events(
+  index: &Index,
+  mut events: Vec<Drc20Event>,
+) -> Result<Vec<Drc20Event>> {
+  for ev in &mut events {
+    let decimal = if let Some(token_info) = index.get_drc20_token_info(&ev.tick)? {
+      token_info.decimal
+    } else {
+      18u8
+    };
+
+    if let Some(ref mut from) = ev.from {
+      if index.get_network()? == Network::Regtest {
+        if let ScriptKey::Address(ref mut address) = from {
+          address.network = Network::Regtest;
+        }
+      }
+    }
+
+    if let Some(ref mut to) = ev.to {
+      if index.get_network()? == Network::Regtest {
+        if let ScriptKey::Address(ref mut address) = to {
+          address.network = Network::Regtest;
+        }
+      }
+    }
+
+    if let Some(ref supply) = ev.supply {
+      if let Ok(val) = Num::from_str(supply.as_str()) {
+        if let Ok(val_u128) = val.checked_to_u128() {
+          ev.supply = Some(format_balance(val_u128, decimal));
+        }
+      }
+    }
+
+    if let Some(ref limit) = ev.limit {
+      if let Ok(val) = Num::from_str(limit.as_str()) {
+        if let Ok(val_u128) = val.checked_to_u128() {
+          ev.limit = Some(format_balance(val_u128, decimal));
+        }
+      }
+    }
+
+    if ev.event != "Deploy" {
+      if let Some(ref amount) = ev.amt {
+        if let Ok(val) = u128::from_str(amount.as_str()) {
+          ev.amt = Some(format_balance(val, decimal));
+        }
+      }
+    }
+  }
+
+  Ok(events)
+}
+
+fn drc20_event_from(event: Event) -> Drc20Event {
+  match event {
+    Event::Deploy(deploy) => Drc20Event {
+      event: "Deploy".to_string(),
+      txid: None,
+      vout: deploy.vout,
+      from: Some(deploy.deployed_by),
+      to: None,
+      amt: None,
+      tick: deploy.tick,
+      supply: Some(deploy.supply.to_string()),
+      limit: Some(deploy.limit_per_mint.to_string()),
+      block: None,
+      timestamp: None,
+    },
+    Event::Mint(mint) => Drc20Event {
+      event: "Mint".to_string(),
+      txid: None,
+      vout: mint.vout,
+      from: None,
+      to: Some(mint.to),
+      amt: Some(mint.amount.to_string()),
+      tick: mint.tick,
+      supply: None,
+      limit: None,
+      block: None,
+      timestamp: None,
+    },
+    Event::InscribeTransfer(inscribe_transfer) => Drc20Event {
+      event: "Inscribe Transfer".to_string(),
+      txid: None,
+      vout: inscribe_transfer.vout,
+      from: None,
+      to: Some(inscribe_transfer.to),
+      amt: Some(inscribe_transfer.amount.to_string()),
+      tick: inscribe_transfer.tick,
+      supply: None,
+      limit: None,
+      block: None,
+      timestamp: None,
+    },
+    Event::Transfer(transfer) => Drc20Event {
+      event: "Transfer".to_string(),
+      txid: None,
+      vout: transfer.vout,
+      from: Some(transfer.from),
+      to: Some(transfer.to),
+      amt: Some(transfer.amount.to_string()),
+      tick: transfer.tick,
+      supply: None,
+      limit: None,
+      block: None,
+      timestamp: None,
+    },
+  }
 }
 
 fn format_balance(balance: u128, decimal_places: u8) -> String {

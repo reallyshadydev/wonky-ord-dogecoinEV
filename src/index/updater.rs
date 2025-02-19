@@ -402,12 +402,18 @@ impl<'index> Updater<'_> {
     let mut satpoint_to_inscription_id = wtx.open_table(SATPOINT_TO_INSCRIPTION_ID)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
     let mut transaction_id_to_transaction = wtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
+    let mut transaction_id_to_inscription_events =
+        wtx.open_multimap_table(TRANSACTION_ID_TO_INSCRIPTION_EVENTS)?;
+    let mut address_to_inscription_events =
+      wtx.open_multimap_table(ADDRESS_TO_INSCRIPTION_EVENT)?;
 
     let mut drc20_token_info = wtx.open_table(DRC20_TOKEN)?;
     let mut drc20_token_holder = wtx.open_multimap_table(DRC20_TOKEN_HOLDER)?;
     let mut drc20_token_balance = wtx.open_table(DRC20_BALANCES)?;
     let mut drc20_inscribe_transfer = wtx.open_table(DRC20_INSCRIBE_TRANSFER)?;
     let mut drc20_transferable_log = wtx.open_table(DRC20_TRANSFERABLELOG)?;
+    let mut transaction_id_to_drc20_events = wtx.open_multimap_table(TRANSACTION_ID_TO_DRC20_EVENTS)?;
+    let mut address_to_drc20_events = wtx.open_multimap_table(ADDRESS_TO_DRC20_EVENTS)?;
 
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
@@ -432,6 +438,9 @@ impl<'index> Updater<'_> {
         &mut address_to_outpoint,
         &mut sat_to_inscription_id,
         &mut satpoint_to_inscription_id,
+        &mut transaction_id_to_inscription_events,
+        &mut address_to_inscription_events,
+        Arc::new(self.index),
         block.header.time,
         value_cache,
         index.chain,
@@ -547,6 +556,8 @@ impl<'index> Updater<'_> {
           &mut drc20_transferable_log,
           &inscription_id_to_inscription_entry,
           &mut transaction_id_to_transaction,
+          &mut transaction_id_to_drc20_events,
+          &mut address_to_drc20_events,
         )?
         .index_block(
           BlockContext {

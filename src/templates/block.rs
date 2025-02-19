@@ -10,9 +10,10 @@ impl Serialize for Height {
   }
 }
 
-pub(crate) struct BlockHashAndConfirmations {
+pub(crate) struct BlockHashAndTimeData {
   pub(crate) hash: Option<BlockHash>,
   pub(crate) confirmations: Option<u32>,
+  pub(crate) time: Option<usize>,
 }
 
 #[derive(Serialize)]
