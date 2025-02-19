@@ -37,3 +37,41 @@
   </li>
 %% }
 </ul>
+%% for event in &self.drc20_events {
+<h2>Drc20 Event</h2>
+    <dl>
+      <dt>Event</dt><dd>{{ event.event }}</dd>
+      <dt>Output</dt><dd>{{ event.vout }}</dd>
+      <dt>Tick</dt><dd>{{ event.tick }}</dd>
+%% if let Some(from) = &event.from {
+      <dt>from</dt><dd>{{ from }}</dd>
+%% }
+%% if let Some(to) = &event.to {
+      <dt>to</dt><dd>{{ to }}</dd>
+%% }
+%% if let Some(amount) = &event.amt {
+      <dt>amount</dt><dd>{{ amount }}</dd>
+%% }
+%% if let Some(supply) = &event.supply {
+      <dt>supply</dt><dd>{{ supply }}</dd>
+%% }
+%% if let Some(limit) = &event.limit {
+      <dt>limit</dt><dd>{{ limit }}</dd>
+%% }
+    </dl>
+%% }
+%% for event in &self.inscription_events {
+<h2>Inscription Event</h2>
+    <dl>
+      <dt>Event</dt><dd>{{ event.event }}</dd>
+%% if let Some(inscription_id) = &event.inscription_id {
+      <dt>Inscription ID</dt><dd>{{ inscription_id }}</dd>
+%% }
+%% if let Some(from) = &event.from {
+      <dt>from</dt><dd>{{ from }}</dd>
+%% }
+%% if let Some(to) = &event.to {
+      <dt>to</dt><dd>{{ to }}</dd>
+%% }
+    </dl>
+%% }

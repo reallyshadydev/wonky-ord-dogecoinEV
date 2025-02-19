@@ -6,8 +6,55 @@ use {
   std::str,
   super::*,
 };
+use crate::drc20::script_key::ScriptKey;
 
 const PROTOCOL_ID: &[u8] = b"ord";
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct InscriptionEvent {
+  pub event: String,
+  pub txid: Option<Txid>,
+  pub inscription_id: Option<InscriptionId>,
+  pub vout: u32,
+  pub from: Option<ScriptKey>,
+  pub to: Option<ScriptKey>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct InscriptionEventWithBlock {
+  pub event: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub txid: Option<Txid>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub inscription_id: Option<InscriptionId>,
+  pub vout: u32,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub from: Option<ScriptKey>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub to: Option<ScriptKey>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub block: Option<u32>,
+}
+
+impl Display for InscriptionEvent {
+  fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    write!(f, "Event: {}", self.event)?;
+
+    if let Some(inscription_id) = &self.inscription_id {
+      write!(f, "\nInscription ID: {}", inscription_id)?;
+    }
+
+    if let Some(from) = &self.from {
+      write!(f, "\nFrom: {}", from)?;
+    }
+
+    if let Some(to) = &self.to {
+      write!(f, "\nTo: {}", to)?;
+    }
+
+    Ok(())
+  }
+}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Eq, Default)]
 pub(crate) struct Inscription {

@@ -26,11 +26,12 @@ use {
   url::Url,
 };
 
-use crate::drc20::{Balance, max_script_tick_key, min_script_tick_key, script_tick_key, Tick, TokenInfo, TransferableLog, min_script_tick_id_key, max_script_tick_id_key};
+use crate::drc20::{Balance, max_script_tick_key, min_script_tick_key, script_tick_key, Tick, TokenInfo, TransferableLog, min_script_tick_id_key, max_script_tick_id_key, Event, DeployEvent, MintEvent, InscribeTransferEvent, TransferEvent};
 use crate::drc20::script_key::ScriptKey;
+use crate::inscription::InscriptionEvent;
 use crate::sat::Sat;
 use crate::sat_point::SatPoint;
-use crate::templates::BlockHashAndConfirmations;
+use crate::templates::{BlockHashAndTimeData};
 
 pub(crate) use self::entry::DuneEntry;
 
@@ -75,6 +76,10 @@ define_table! { SAT_TO_SATPOINT, u64, &SatPointValue }
 define_table! { STATISTIC_TO_COUNT, u64, u64 }
 define_table! { TRANSACTION_ID_TO_DUNE, &TxidValue, u128 }
 define_table! { TRANSACTION_ID_TO_TRANSACTION, &TxidValue, &[u8] }
+define_multimap_table! { TRANSACTION_ID_TO_DRC20_EVENTS, &TxidValue, &[u8] }
+define_multimap_table! { TRANSACTION_ID_TO_INSCRIPTION_EVENTS, &TxidValue, &[u8] }
+define_multimap_table! { ADDRESS_TO_DRC20_EVENTS, &str, &[u8]}
+define_multimap_table! { ADDRESS_TO_INSCRIPTION_EVENT, &str, &[u8]}
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u32, u128 }
 define_table! { DRC20_BALANCES, &str, &[u8] }
 define_table! { DRC20_TOKEN, &str, &[u8] }
@@ -1138,6 +1143,107 @@ impl Index {
     )
   }
 
+  pub(crate) fn get_drc20_events_by_tx_id(&self, tx_id: Txid) -> Result<Vec<Event>> {
+    let read_txn = self.database.begin_read()?;
+    let table = read_txn.open_multimap_table(TRANSACTION_ID_TO_DRC20_EVENTS)?;
+
+    let mut events = Vec::new();
+    let mut iter = table.get(&tx_id.store())?;
+
+    while let Some(Ok(entry)) = iter.next() {
+      events.push(rmp_serde::from_slice::<Event>(entry.value())?);
+    }
+
+    Ok(events)
+  }
+
+  pub(crate) fn get_drc20_events_by_address(
+    &self,
+    address: ScriptKey,
+    page: usize,
+    page_size: usize,
+  ) -> Result<Vec<Event>> {
+    let mut result: Vec<Event> = Vec::new();
+    // todo: we need that for now, because blocks for a specific tx are requested and it takes too long to handle a high amount
+    let max_size = 5000;
+
+    self
+      .database
+      .begin_read()?
+      .open_multimap_table(ADDRESS_TO_DRC20_EVENTS)?
+      .get(address.to_string().as_str())?
+      .for_each(|res| {
+        if let Ok(item) = res {
+          if let Ok(deploy) = rmp_serde::from_slice::<DeployEvent>(item.value()) {
+            result.push(Event::Deploy(deploy));
+          } else if let Ok(mint) = rmp_serde::from_slice::<MintEvent>(item.value()) {
+            result.push(Event::Mint(mint));
+          } else if let Ok(inscribe_transfer) =
+            rmp_serde::from_slice::<InscribeTransferEvent>(item.value())
+          {
+            result.push(Event::InscribeTransfer(inscribe_transfer));
+          } else if let Ok(transfer) = rmp_serde::from_slice::<TransferEvent>(item.value()) {
+            result.push(Event::Transfer(transfer));
+          }
+        } else {
+          println!("Error: {:?}", res.err().unwrap());
+        }
+      });
+
+    if result.len() > max_size {
+      Ok(
+        result
+          .into_iter()
+          .skip(page * page_size)
+          .take(max_size)
+          .collect::<Vec<Event>>(),
+      )
+    } else {
+      Ok(result)
+    }
+  }
+
+  pub(crate) fn get_inscription_events_by_address(
+    &self,
+    address: ScriptKey,
+  ) -> Result<Vec<InscriptionEvent>> {
+    let mut result: Vec<InscriptionEvent> = Vec::new();
+
+    self
+      .database
+      .begin_read()?
+      .open_multimap_table(ADDRESS_TO_INSCRIPTION_EVENT)?
+      .get(address.to_string().as_str())?
+      .for_each(|res| {
+        if let Ok(item) = res {
+          if let Ok(event) = rmp_serde::from_slice::<InscriptionEvent>(item.value()) {
+            result.push(event);
+          }
+        } else {
+          println!("Error: {:?}", res.err().unwrap());
+        }
+      });
+
+    Ok(result)
+  }
+
+  pub(crate) fn get_inscription_events_by_tx_id(
+    &self,
+    tx_id: Txid,
+  ) -> Result<Vec<InscriptionEvent>> {
+    let read_txn = self.database.begin_read()?;
+    let table = read_txn.open_multimap_table(TRANSACTION_ID_TO_INSCRIPTION_EVENTS)?;
+
+    let mut events = Vec::new();
+    let mut iter = table.get(&tx_id.store())?;
+
+    while let Some(Ok(entry)) = iter.next() {
+      events.push(rmp_serde::from_slice::<InscriptionEvent>(entry.value())?);
+    }
+
+    Ok(events)
+  }
+
   pub(crate) fn get_inscription_by_id(
     &self,
     inscription_id: InscriptionId,
@@ -1272,11 +1378,12 @@ impl Index {
   pub(crate) fn get_transaction_blockhash(
     &self,
     txid: Txid,
-  ) -> Result<Option<BlockHashAndConfirmations>> {
+  ) -> Result<Option<BlockHashAndTimeData>> {
     if let Ok(result) = self.client.get_raw_transaction_info(&txid) {
-      Ok(Some(BlockHashAndConfirmations {
+      Ok(Some(BlockHashAndTimeData {
         hash: result.blockhash,
         confirmations: result.confirmations,
+        time: result.time,
       }))
     } else {
       Ok(None)

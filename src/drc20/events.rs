@@ -1,3 +1,5 @@
+use std::fmt;
+use std::fmt::Formatter;
 use bitcoin::Txid;
 use super::*;
 use crate::{InscriptionId, SatPoint};
@@ -21,6 +23,61 @@ pub struct Receipt {
     pub from: ScriptKey,
     pub to: ScriptKey,
     pub result: Result<Event, DRC20Error>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Drc20Event {
+  pub event: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub txid: Option<Txid>,
+  pub vout: u32,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub from: Option<ScriptKey>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub to: Option<ScriptKey>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub amt: Option<String>,
+  pub tick: Tick,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub supply: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub limit: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub block: Option<u32>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub timestamp: Option<usize>,
+}
+
+impl Display for Drc20Event {
+  fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    write!(
+      f,
+      "Event: {}\nVout: {}\nTick: {}",
+      self.event, self.vout, self.tick
+    )?;
+
+    if let Some(from) = &self.from {
+      write!(f, "\nFrom: {}", from)?;
+    }
+
+    if let Some(to) = &self.to {
+      write!(f, "\nTo: {}", to)?;
+    }
+
+    if let Some(amt) = &self.amt {
+      write!(f, "\nAmt: {}", amt)?;
+    }
+
+    if let Some(supply) = &self.supply {
+      write!(f, "\nSupply: {}", supply)?;
+    }
+
+    if let Some(limit) = &self.limit {
+      write!(f, "\nLimit: {}", limit)?;
+    }
+
+    Ok(())
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

@@ -1,3 +1,5 @@
+use bitcoin::PackedLockTime;
+use crate::inscription::InscriptionEvent;
 use super::*;
 
 #[derive(Boilerplate)]
@@ -9,17 +11,36 @@ pub(crate) struct TransactionHtml {
   inscription_count: u32,
   transaction: Transaction,
   txid: Txid,
+  drc20_events: Vec<Drc20Event>,
+  inscription_events: Vec<InscriptionEvent>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TransactionJson {
-  blockhash: Option<BlockHash>,
-  confirmations: Option<u32>,
-  chain: Chain,
-  etching: Option<SpacedDune>,
-  inscription_count: u32,
-  transaction: Transaction,
-  txid: Txid,
+  pub(crate) blockhash: Option<BlockHash>,
+  pub(crate) confirmations: Option<u32>,
+  pub(crate) chain: Chain,
+  pub(crate) etching: Option<SpacedDune>,
+  pub(crate) inscription_count: u32,
+  pub(crate) transaction: TransactionWithAddress,
+  pub(crate) txid: Txid,
+  pub(crate) drc20_events: Vec<Drc20Event>,
+  pub(crate) inscription_events: Vec<InscriptionEvent>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransactionWithAddress {
+  pub version: i32,
+  pub lock_time: PackedLockTime,
+  pub input: Vec<TxIn>,
+  pub output: Vec<TxOutWithAddress>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct TxOutWithAddress {
+  pub value: u64,
+  pub script_pubkey: Script,
+  pub address: Option<Address>,
 }
 
 impl TransactionHtml {
@@ -30,6 +51,8 @@ impl TransactionHtml {
     inscription_count: u32,
     chain: Chain,
     etching: Option<SpacedDune>,
+    drc20_events: Vec<Drc20Event>,
+    inscription_events: Vec<InscriptionEvent>,
   ) -> Self {
     Self {
       txid: transaction.txid(),
@@ -39,18 +62,8 @@ impl TransactionHtml {
       etching,
       inscription_count,
       transaction,
-    }
-  }
-
-  pub(crate) fn to_json(&self) -> TransactionJson {
-    TransactionJson {
-      blockhash: self.blockhash.clone(),
-      confirmations: self.confirmations,
-      chain: self.chain.clone(),
-      etching: self.etching.clone(),
-      inscription_count: self.inscription_count.clone(),
-      transaction: self.transaction.clone(),
-      txid: self.txid.clone(),
+      drc20_events,
+      inscription_events,
     }
   }
 }

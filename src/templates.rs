@@ -1,6 +1,6 @@
 use {boilerplate::Boilerplate, super::*};
 pub(crate) use {
-  block::BlockHashAndConfirmations,
+  block::BlockHashAndTimeData,
   block::BlockHtml,
   block::BlockJson,
   drc20::{DRC20, DRC20Balance, DRC20Output, DRC20UtxoOutput, Operation},
@@ -26,6 +26,9 @@ pub(crate) use {
   rare::RareTxt,
   sat::SatHtml,
   transaction::TransactionHtml,
+  transaction::TransactionJson,
+  transaction::TransactionWithAddress,
+  transaction::TxOutWithAddress,
   utxo::Utxo,
 };
 
