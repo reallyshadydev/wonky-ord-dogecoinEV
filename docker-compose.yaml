@@ -1,14 +1,14 @@
 services:
   ord-indexer:
-    image: verydogelabs/wonky-ord-dogecoin
+    image: reallyshadydev/wonky-ord-dogecoinEV
     env_file:
       - .env
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - STARTING_SATS_PATH=/starting_sats.json
       - SUBSIDIES_PATH=/subsidies.json
-      - FIRST_INSCRIPTION_HEIGHT=4609723
-      - FIRST_DUNE_HEIGHT=5084000
+      - FIRST_INSCRIPTION_HEIGHT=0
+      - FIRST_DUNE_HEIGHT=0
     tty: false
     restart: "always"
     # for the indexer to be able to connect to the local dogecoin node we use the host network
