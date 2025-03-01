@@ -1,6 +1,6 @@
 [package]
-name = "ord-dogecoin"
-description = "◉ Ordinal wallet and block explorer for dogecoin"
+name = "ord-dogecoinEV"
+description = "◉ Ordinal wallet and block explorer for dogecoinEV"
 version = "0.5.1"
 license = "CC0-1.0"
 edition = "2021"
@@ -90,5 +90,5 @@ path = "tests/lib.rs"
 pulldown-cmark = "0.9.2"
 
 [patch.crates-io]
-bitcoin = { git = "https://github.com/apezord/rust-dogecoin" }
-bitcoincore-rpc = { git = "https://github.com/apezord/rust-dogecoincore-rpc" }
+bitcoin = { git = "https://github.com/reallyshadydev/rust-dogecoinev" }
+bitcoincore-rpc = { git = "https://github.com/apezord/rust-dogecoinev-rpc" }
